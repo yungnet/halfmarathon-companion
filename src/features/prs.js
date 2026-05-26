@@ -248,12 +248,14 @@ function _openModal(root, preset, existing) {
 
 // ── Auto-detect from Strava ───────────────────────────────────────────────────
 
-// Distance scan ranges in metres — wide enough to catch GPS drift
+// Distance scan ranges in metres.
+// Upper bounds are intentionally generous — GPS and crowd-weaving routinely
+// adds 200–600 m to a race recording (e.g. a HM can read 21.6–21.9 km).
 const SCAN_RANGES = {
-  5:    [4700,  5300],
-  10:   [9700,  10300],
-  21.1: [20800, 21500],
-  42.2: [41900, 42600],
+  5:    [4700,  5600],
+  10:   [9700,  10800],
+  21.1: [20800, 22500],
+  42.2: [41900, 43500],
 }
 
 function _autoDetect(root) {
