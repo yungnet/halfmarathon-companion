@@ -23,9 +23,11 @@ function _render(root) {
 
   // ── Method toggle ──
   root.querySelector('#z-method').addEventListener('change', e => {
-    root.querySelector('#maxhr-wrap').hidden = e.target.value !== 'maxhr'
-    root.querySelector('#lthr-wrap').hidden  = e.target.value !== 'lthr'
-    root.querySelector('#age-wrap').hidden   = e.target.value !== 'age'
+    const v = e.target.value
+    root.querySelector('#karvonen-wrap').hidden = v !== 'karvonen'
+    root.querySelector('#maxhr-wrap').hidden    = v !== 'maxhr'
+    root.querySelector('#lthr-wrap').hidden     = v !== 'lthr'
+    root.querySelector('#age-wrap').hidden      = v !== 'age'
   })
 
   // ── Save ──
@@ -33,8 +35,16 @@ function _render(root) {
     const method = root.querySelector('#z-method').value
     const data   = { method }
 
-    if (method === 'maxhr') {
-      const v = parseInt(root.querySelector('#z-maxhr').value)
+    if (method === 'karvonen') {
+      const maxHR = parseInt(root.querySelector('#z-maxhr').value)
+      const rhr   = parseInt(root.querySelector('#z-rhr').value)
+      if (!maxHR || maxHR < 120 || maxHR > 250) { alert('Enter a valid max HR (120–250 bpm)'); return }
+      if (!rhr   || rhr   < 30  || rhr   > 120) { alert('Enter a valid resting HR (30–120 bpm)'); return }
+      if (rhr >= maxHR) { alert('Resting HR must be lower than max HR'); return }
+      data.maxHR = maxHR
+      data.rhr   = rhr
+    } else if (method === 'maxhr') {
+      const v = parseInt(root.querySelector('#z-maxhr-only').value)
       if (!v || v < 120 || v > 250) { alert('Enter a valid max HR (120–250 bpm)'); return }
       data.maxHR = v
     } else if (method === 'lthr') {
@@ -56,7 +66,7 @@ function _render(root) {
 // ── Setup card ────────────────────────────────────────────────────────────────
 
 function _setupHTML(config) {
-  const m = config?.method || 'maxhr'
+  const m = config?.method || 'karvonen'
   return `
     <p class="section-header">Zone Setup</p>
     <div class="card">
@@ -64,26 +74,49 @@ function _setupHTML(config) {
         <div class="form-group">
           <label>Calculation method</label>
           <select id="z-method">
-            <option value="maxhr" ${m === 'maxhr' ? 'selected' : ''}>Max Heart Rate % (common)</option>
-            <option value="lthr"  ${m === 'lthr'  ? 'selected' : ''}>Lactate Threshold HR (most accurate)</option>
-            <option value="age"   ${m === 'age'   ? 'selected' : ''}>Age estimate (least accurate)</option>
+            <option value="karvonen" ${m === 'karvonen' ? 'selected' : ''}>Karvonen / HR Reserve (recommended)</option>
+            <option value="maxhr"    ${m === 'maxhr'    ? 'selected' : ''}>Max HR % only</option>
+            <option value="lthr"     ${m === 'lthr'     ? 'selected' : ''}>Lactate Threshold HR</option>
+            <option value="age"      ${m === 'age'      ? 'selected' : ''}>Age estimate</option>
           </select>
         </div>
 
+        <!-- Karvonen: needs max HR + resting HR -->
+        <div id="karvonen-wrap" ${m !== 'karvonen' ? 'hidden' : ''}>
+          <div class="row-2">
+            <div class="form-group">
+              <label>Max HR (bpm)</label>
+              <input id="z-maxhr" type="number" min="120" max="250" inputmode="numeric"
+                placeholder="185" value="${config?.maxHR || ''}" />
+            </div>
+            <div class="form-group">
+              <label>Resting HR (bpm)</label>
+              <input id="z-rhr" type="number" min="30" max="120" inputmode="numeric"
+                placeholder="55" value="${config?.rhr || ''}" />
+            </div>
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:-8px;margin-bottom:14px;">
+            Resting HR = check your pulse first thing in the morning before getting up, or check your Garmin/Apple Watch overnight avg. Zones shift up significantly vs. max HR % alone.
+          </p>
+        </div>
+
+        <!-- Max HR only -->
         <div id="maxhr-wrap" class="form-group" ${m !== 'maxhr' ? 'hidden' : ''}>
           <label>Max heart rate (bpm)</label>
-          <input id="z-maxhr" type="number" min="120" max="250" inputmode="numeric"
+          <input id="z-maxhr-only" type="number" min="120" max="250" inputmode="numeric"
             placeholder="185" value="${config?.maxHR || ''}" />
           <p style="font-size:12px;color:var(--text-muted);margin-top:4px;">Highest HR ever seen during an all-out sprint or race finish</p>
         </div>
 
+        <!-- LTHR -->
         <div id="lthr-wrap" class="form-group" ${m !== 'lthr' ? 'hidden' : ''}>
           <label>Lactate threshold HR (bpm)</label>
           <input id="z-lthr" type="number" min="100" max="220" inputmode="numeric"
             placeholder="165" value="${config?.lthr || ''}" />
-          <p style="font-size:12px;color:var(--text-muted);margin-top:4px;">Avg HR during a flat-out 30-min time trial (or use Strava's Fitness & Freshness estimate)</p>
+          <p style="font-size:12px;color:var(--text-muted);margin-top:4px;">Avg HR during a flat-out 30-min time trial (or use Strava's Fitness &amp; Freshness estimate)</p>
         </div>
 
+        <!-- Age -->
         <div id="age-wrap" class="form-group" ${m !== 'age' ? 'hidden' : ''}>
           <label>Age</label>
           <input id="z-age" type="number" min="15" max="90" inputmode="numeric"

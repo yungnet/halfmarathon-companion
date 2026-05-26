@@ -28,7 +28,22 @@ export function calcZones(config) {
     ]
   }
 
-  // Max HR method (also used for age-based)
+  // Karvonen / Heart Rate Reserve (max HR + resting HR)
+  if (config.method === 'karvonen') {
+    const max = config.maxHR
+    const rhr = config.rhr
+    const hrr = max - rhr  // Heart Rate Reserve
+    const k   = (pct) => Math.round(rhr + pct * hrr)
+    return [
+      { zone: 1, min: k(0.50), max: k(0.60), ...ZONE_META[0] },
+      { zone: 2, min: k(0.60), max: k(0.70), ...ZONE_META[1] },
+      { zone: 3, min: k(0.70), max: k(0.80), ...ZONE_META[2] },
+      { zone: 4, min: k(0.80), max: k(0.90), ...ZONE_META[3] },
+      { zone: 5, min: k(0.90), max: max,      ...ZONE_META[4] },
+    ]
+  }
+
+  // Max HR % only (also used for age-based)
   const max = config.method === 'age' ? 220 - config.age : config.maxHR
   return [
     { zone: 1, min: Math.round(max * 0.50), max: Math.round(max * 0.60), ...ZONE_META[0] },
