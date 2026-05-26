@@ -1,5 +1,7 @@
 // Routes — Strava activities as stacked transparent polylines + run list
 import { getZones, zoneIndexForHR } from '../lib/zones.js'
+import { fetchStream }               from '../lib/streamCache.js'
+import { renderHRChart, renderPaceChart } from '../lib/charts.js'
 
 const CREDS_KEY      = 'hm_strava_creds'
 const TOKENS_KEY     = 'hm_strava_tokens'
@@ -11,6 +13,7 @@ const STRAVA_API_URL   = 'https://www.strava.com/api/v3'
 
 let map            = null
 let polylineLayers = new Map()  // activityId → L.polyline
+let activityMap    = new Map()  // activityId → activity object
 let selectedId     = null
 
 export function initHeatmap(root) {
@@ -19,6 +22,12 @@ export function initHeatmap(root) {
   const error  = params.get('error')
   if (error) history.replaceState({}, '', window.location.pathname)
   _render(root, error ? null : code)
+
+  // Global Escape key → close blade (registered once per session)
+  if (!window._hmBladeKey) {
+    window._hmBladeKey = e => { if (e.key === 'Escape') _closeBlade() }
+    document.addEventListener('keydown', window._hmBladeKey)
+  }
 }
 
 // ── State router ──────────────────────────────────────────────────────────────
@@ -147,6 +156,7 @@ function _renderMap(root, creds, tokens) {
   root.querySelector('#rt-refresh').addEventListener('click', () => {
     localStorage.removeItem(ACTIVITIES_KEY)
     polylineLayers.clear()
+    activityMap.clear()
     selectedId = null
     _loadAndRender(root, creds, tokens)
   })
@@ -155,6 +165,7 @@ function _renderMap(root, creds, tokens) {
     localStorage.removeItem(TOKENS_KEY)
     localStorage.removeItem(ACTIVITIES_KEY)
     polylineLayers.clear()
+    activityMap.clear()
     selectedId = null
     _render(root, null)
   })
@@ -173,6 +184,9 @@ async function _loadAndRender(root, creds, tokens) {
   try {
     const activities = await _fetchRunActivities(freshTokens.accessToken)
     const totalKm    = activities.reduce((s, a) => s + a.distance / 1000, 0)
+
+    // Build fast lookup map for blade
+    activityMap = new Map(activities.map(a => [a.id, a]))
 
     const athleteEl = root.querySelector('#rt-athlete')
     if (athleteEl) {
@@ -224,7 +238,14 @@ function _drawPolylines(activities) {
         opacity: 0.25,
       }).addTo(map)
 
+      // Single click → select; double-click → open blade
       layer.on('click', () => _selectRun(a.id))
+      layer.on('dblclick', e => {
+        L.DomEvent.stopPropagation(e)
+        e.originalEvent?.preventDefault()
+        _openBlade(a.id)
+      })
+
       polylineLayers.set(a.id, layer)
       allLatLngs.push(...pts)
     })
@@ -242,7 +263,6 @@ function _selectRun(actId) {
   }
 
   if (selectedId === actId) {
-    // Clicking same run deselects
     selectedId = null
     document.querySelectorAll('.run-list-item').forEach(el => el.classList.remove('selected'))
     return
@@ -284,41 +304,173 @@ function _renderRunList(root, activities) {
 
   inner.innerHTML = `
     <div class="rt-list-header">
-      ${activities.length} runs${noRoute ? ` · ${noRoute} without GPS hidden` : ''}
+      ${activities.length} runs${noRoute ? ` · ${noRoute} without GPS hidden` : ''} · double-tap to see charts
     </div>
     ${(() => {
       const zones = getZones()
       return withRoutes.map(a => {
-      const km   = (a.distance / 1000).toFixed(2)
-      const pace = _formatPace(a.moving_time, a.distance)
-      const time = _formatDuration(a.moving_time)
-      const date = new Date(a.start_date_local).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-      const hr   = (() => {
-        if (!a.average_heartrate) return ''
-        const bpm = Math.round(a.average_heartrate)
-        const zi  = zones ? zoneIndexForHR(bpm, zones) : null
-        if (zi !== null) {
-          const z = zones[zi]
-          return `· <span style="background:${z.color}22;color:${z.color};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;">Z${z.zone} ♥ ${bpm}</span>`
-        }
-        return `· <span style="color:#ef4444;">♥ ${bpm}</span>`
-      })()
-      return `
-        <div class="run-list-item" data-id="${a.id}">
-          <div class="rli-top">
-            <span class="rli-name">${a.name}</span>
-            <span class="rli-dist">${km} km</span>
-          </div>
-          <div class="rli-bottom">
-            <span class="rli-date">${date}</span>
-            <span class="rli-meta">${pace} /km · ${time} ${hr}</span>
-          </div>
-        </div>`
-    }).join('')})()}`
+        const km   = (a.distance / 1000).toFixed(2)
+        const pace = _formatPace(a.moving_time, a.distance)
+        const time = _formatDuration(a.moving_time)
+        const date = new Date(a.start_date_local).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+        const hr   = (() => {
+          if (!a.average_heartrate) return ''
+          const bpm = Math.round(a.average_heartrate)
+          const zi  = zones ? zoneIndexForHR(bpm, zones) : null
+          if (zi !== null) {
+            const z = zones[zi]
+            return `· <span style="background:${z.color}22;color:${z.color};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;">Z${z.zone} ♥ ${bpm}</span>`
+          }
+          return `· <span style="color:#ef4444;">♥ ${bpm}</span>`
+        })()
+        return `
+          <div class="run-list-item" data-id="${a.id}">
+            <div class="rli-top">
+              <span class="rli-name">${a.name}</span>
+              <span class="rli-dist">${km} km</span>
+            </div>
+            <div class="rli-bottom">
+              <span class="rli-date">${date}</span>
+              <span class="rli-meta">${pace} /km · ${time} ${hr}</span>
+            </div>
+          </div>`
+      }).join('')
+    })()}`
+
+  // Double-tap detection: track last tap per run item
+  let lastTapId = null
+  let lastTapMs = 0
 
   inner.querySelectorAll('.run-list-item').forEach(el => {
-    el.addEventListener('click', () => _selectRun(parseInt(el.dataset.id)))
+    el.addEventListener('click', () => {
+      const id  = parseInt(el.dataset.id)
+      const now = Date.now()
+      if (lastTapId === id && now - lastTapMs < 350) {
+        // Double-tap → open blade
+        _openBlade(id)
+        lastTapId = null
+        lastTapMs = 0
+      } else {
+        // Single tap → select on map
+        _selectRun(id)
+        lastTapId = id
+        lastTapMs = now
+      }
+    })
   })
+}
+
+// ── Run detail blade ──────────────────────────────────────────────────────────
+
+async function _openBlade(actId) {
+  const activity = activityMap.get(actId)
+  if (!activity) return
+
+  // Create blade container once and keep in DOM
+  let blade = document.getElementById('run-blade')
+  if (!blade) {
+    blade = document.createElement('div')
+    blade.id = 'run-blade'
+    document.body.appendChild(blade)
+  }
+
+  // Show shell with loading state immediately
+  blade.innerHTML = _bladeShellHTML(activity, /*loading=*/true)
+  blade.classList.add('open')
+
+  // Wire up close handlers
+  blade.querySelector('#blade-close').addEventListener('click', _closeBlade)
+  blade.querySelector('#blade-backdrop').addEventListener('click', _closeBlade)
+
+  // Swipe-down to close
+  const sheet = blade.querySelector('#blade-sheet')
+  let swipeStartY = null
+  sheet.addEventListener('touchstart', e => { swipeStartY = e.touches[0].clientY }, { passive: true })
+  sheet.addEventListener('touchend',   e => {
+    if (swipeStartY === null) return
+    if (e.changedTouches[0].clientY - swipeStartY > 80) _closeBlade()
+    swipeStartY = null
+  })
+
+  const bladeBody = blade.querySelector('#blade-body')
+
+  try {
+    const stream = await fetchStream(actId)
+    const zones  = getZones()
+
+    const hasHR   = !!(stream.heartrate?.data?.length)
+    const hasPace = !!(stream.velocity_smooth?.data?.length)
+
+    if (!hasHR && !hasPace) {
+      bladeBody.innerHTML = `
+        <p style="text-align:center;color:var(--text-muted);padding:32px 20px;font-size:13px;line-height:1.6;">
+          No heart rate or pace stream data available for this run.
+        </p>`
+      return
+    }
+
+    bladeBody.innerHTML = `
+      ${hasHR ? `
+        <div class="blade-section">
+          <div class="blade-section-label">Heart Rate</div>
+          ${renderHRChart(stream, zones)}
+        </div>` : ''}
+      ${hasPace ? `
+        <div class="blade-section">
+          <div class="blade-section-label">Pace</div>
+          ${renderPaceChart(stream)}
+        </div>` : ''}
+    `
+  } catch (err) {
+    bladeBody.innerHTML = `
+      <p style="text-align:center;color:var(--danger);padding:24px 20px;font-size:13px;">${err.message}</p>`
+  }
+}
+
+function _closeBlade() {
+  const blade = document.getElementById('run-blade')
+  blade?.classList.remove('open')
+}
+
+function _bladeShellHTML(activity, loading) {
+  const km   = (activity.distance / 1000).toFixed(2)
+  const time = _formatDuration(activity.moving_time)
+  const pace = _formatPace(activity.moving_time, activity.distance)
+  const hr   = activity.average_heartrate
+
+  return `
+    <div id="blade-backdrop"></div>
+    <div id="blade-sheet">
+      <div id="blade-drag">
+        <div id="blade-drag-bar"></div>
+      </div>
+      <div id="blade-header">
+        <div id="blade-title">${activity.name}</div>
+        <button id="blade-close" aria-label="Close">✕</button>
+      </div>
+      <div id="blade-stats">
+        <div class="blade-stat">
+          <span class="blade-stat-value">${km}</span>
+          <span class="blade-stat-label">km</span>
+        </div>
+        <div class="blade-stat">
+          <span class="blade-stat-value">${time}</span>
+          <span class="blade-stat-label">time</span>
+        </div>
+        <div class="blade-stat">
+          <span class="blade-stat-value">${pace}</span>
+          <span class="blade-stat-label">/km</span>
+        </div>
+        ${hr ? `
+        <div class="blade-stat">
+          <span class="blade-stat-value" style="color:#ef4444;">♥ ${Math.round(hr)}</span>
+          <span class="blade-stat-label">avg bpm</span>
+        </div>` : ''}
+      </div>
+      <div id="blade-body">
+        ${loading ? `<div style="padding:48px 20px;text-align:center;color:var(--text-muted);font-size:13px;">⏳ Loading stream data…</div>` : ''}
+      </div>
+    </div>`
 }
 
 // ── Strava API ────────────────────────────────────────────────────────────────
@@ -417,7 +569,6 @@ function _injectRouteStyles() {
     #tab-heatmap.active #heatmap-root {
       display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0;
     }
-    #run-list-panel { flex: 1; min-height: 0; overflow-y: auto; }
 
     .route-toolbar {
       display: flex; align-items: center; gap: 8px;
@@ -428,37 +579,99 @@ function _injectRouteStyles() {
       flex: 1; font-size: 12px; color: var(--text-muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    #leaflet-map {
-      height: 42dvh; min-height: 220px; flex-shrink: 0;
-    }
-    #run-list-panel {
-      flex: 1; overflow-y: auto;
-      border-top: 1px solid var(--border);
-    }
+    #leaflet-map { height: 42dvh; min-height: 220px; flex-shrink: 0; }
+    #run-list-panel { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
     .rt-list-header {
       padding: 8px 14px; font-size: 11px; font-weight: 600;
       text-transform: uppercase; letter-spacing: 0.6px;
       color: var(--text-muted); border-bottom: 1px solid var(--border);
       position: sticky; top: 0; background: var(--bg-base); z-index: 1;
     }
-    .rt-loading {
-      padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 14px;
-    }
+    .rt-loading { padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 14px; }
     .run-list-item {
       padding: 10px 14px; border-bottom: 1px solid var(--border);
       cursor: pointer; transition: background 0.12s;
     }
     .run-list-item:active, .run-list-item:hover { background: var(--bg-surface); }
     .run-list-item.selected { background: var(--bg-surface); border-left: 3px solid var(--danger); }
-    .rli-top {
-      display: flex; justify-content: space-between; align-items: baseline;
-      margin-bottom: 3px;
-    }
+    .rli-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
     .rli-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
     .rli-dist { font-size: 14px; font-weight: 700; color: var(--accent); flex-shrink: 0; }
     .rli-bottom { display: flex; justify-content: space-between; }
     .rli-date  { font-size: 12px; color: var(--text-muted); }
     .rli-meta  { font-size: 12px; color: var(--text-muted); }
+
+    /* ── Run detail blade ── */
+    #run-blade {
+      position: fixed; inset: 0; z-index: 9999;
+      pointer-events: none; opacity: 0;
+      transition: opacity 0.22s ease;
+    }
+    #run-blade.open { pointer-events: all; opacity: 1; }
+
+    #blade-backdrop {
+      position: absolute; inset: 0;
+      background: rgba(0,0,0,0.52);
+    }
+
+    #blade-sheet {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      max-height: 72dvh;
+      background: var(--bg-surface);
+      border-radius: 16px 16px 0 0;
+      overflow: hidden;
+      display: flex; flex-direction: column;
+      transform: translateY(100%);
+      transition: transform 0.30s cubic-bezier(0.32, 0.72, 0, 1);
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
+    #run-blade.open #blade-sheet { transform: translateY(0); }
+
+    #blade-drag {
+      display: flex; justify-content: center;
+      padding: 10px 0 6px; flex-shrink: 0; cursor: grab;
+    }
+    #blade-drag-bar { width: 36px; height: 4px; border-radius: 2px; background: var(--border); }
+
+    #blade-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 16px 10px; flex-shrink: 0;
+    }
+    #blade-title {
+      flex: 1; font-size: 15px; font-weight: 700;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #blade-close {
+      background: none; border: none;
+      color: var(--text-muted); font-size: 18px;
+      cursor: pointer; padding: 4px 6px; line-height: 1;
+      border-radius: 6px; flex-shrink: 0;
+    }
+    #blade-close:hover { background: var(--bg-raised); }
+
+    #blade-stats {
+      display: flex; justify-content: space-around;
+      padding: 10px 16px 12px;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .blade-stat { text-align: center; }
+    .blade-stat-value { font-size: 17px; font-weight: 700; color: var(--text); display: block; }
+    .blade-stat-label {
+      font-size: 10px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.5px; display: block;
+      margin-top: 1px;
+    }
+
+    #blade-body { overflow-y: auto; flex: 1; min-height: 0; padding: 12px 12px 20px; }
+
+    .blade-section { margin-bottom: 18px; }
+    .blade-section-label {
+      font-size: 11px; font-weight: 700;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.7px;
+      margin-bottom: 8px;
+    }
   `
   document.head.appendChild(s)
 }
