@@ -294,26 +294,34 @@ function _renderRunList(root, activities) {
   const inner = root.querySelector('#run-list-inner')
   if (!inner) return
 
-  const withRoutes = activities.filter(a => a.map?.summary_polyline)
-  const noRoute    = activities.length - withRoutes.length
-
   if (!activities.length) {
     inner.innerHTML = `<div class="rt-loading">No runs found.</div>`
     return
   }
 
+  const gpsCount = activities.filter(a => a.map?.summary_polyline).length
+
   inner.innerHTML = `
     <div class="rt-list-header">
-      ${activities.length} runs${noRoute ? ` · ${noRoute} without GPS hidden` : ''} · double-tap to see charts
+      ${activities.length} runs · ${gpsCount} with GPS · double-tap to see charts
     </div>
     ${(() => {
       const zones = getZones()
-      return withRoutes.map(a => {
-        const km   = (a.distance / 1000).toFixed(2)
-        const pace = _formatPace(a.moving_time, a.distance)
-        const time = _formatDuration(a.moving_time)
-        const date = new Date(a.start_date_local).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-        const hr   = (() => {
+      return activities.map(a => {
+        const hasGPS    = !!a.map?.summary_polyline
+        const isIndoor  = a.trainer === true
+        const km        = (a.distance / 1000).toFixed(2)
+        const pace      = _formatPace(a.moving_time, a.distance)
+        const time      = _formatDuration(a.moving_time)
+        const date      = new Date(a.start_date_local).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+
+        const badge = isIndoor
+          ? `<span class="rli-badge">TREADMILL</span>`
+          : !hasGPS
+          ? `<span class="rli-badge">NO GPS</span>`
+          : ''
+
+        const hr = (() => {
           if (!a.average_heartrate) return ''
           const bpm = Math.round(a.average_heartrate)
           const zi  = zones ? zoneIndexForHR(bpm, zones) : null
@@ -323,10 +331,11 @@ function _renderRunList(root, activities) {
           }
           return `· <span style="color:#ef4444;">♥ ${bpm}</span>`
         })()
+
         return `
-          <div class="run-list-item" data-id="${a.id}">
+          <div class="run-list-item${!hasGPS ? ' rli-no-gps' : ''}" data-id="${a.id}">
             <div class="rli-top">
-              <span class="rli-name">${a.name}</span>
+              <span class="rli-name">${a.name} ${badge}</span>
               <span class="rli-dist">${km} km</span>
             </div>
             <div class="rli-bottom">
@@ -337,7 +346,7 @@ function _renderRunList(root, activities) {
       }).join('')
     })()}`
 
-  // Double-tap detection: track last tap per run item
+  // Double-tap detection
   let lastTapId = null
   let lastTapMs = 0
 
@@ -351,7 +360,7 @@ function _renderRunList(root, activities) {
         lastTapId = null
         lastTapMs = 0
       } else {
-        // Single tap → select on map
+        // Single tap → select (map highlight only fires if GPS exists)
         _selectRun(id)
         lastTapId = id
         lastTapMs = now
@@ -600,6 +609,14 @@ function _injectRouteStyles() {
     .rli-bottom { display: flex; justify-content: space-between; }
     .rli-date  { font-size: 12px; color: var(--text-muted); }
     .rli-meta  { font-size: 12px; color: var(--text-muted); }
+    .rli-no-gps { opacity: 0.75; }
+    .rli-badge {
+      display: inline-block;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+      background: var(--bg-raised); color: var(--text-muted);
+      border-radius: 3px; padding: 1px 5px;
+      vertical-align: middle; margin-left: 4px;
+    }
 
     /* ── Run detail blade ── */
     #run-blade {

@@ -16,13 +16,19 @@ export function initPRs(root) {
 
 // ── Render ────────────────────────────────────────────────────────────────────
 
-function _render(root) {
+function _render(root, statusMsg) {
   const prs    = _load()
   const custom = prs.filter(p => !PRESETS.some(pr => pr.distanceKm === p.distanceKm))
+  const hasStrava = !!localStorage.getItem('hm_strava_activities')
 
   root.innerHTML = `
-    <p class="section-header">Race PRs</p>
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 14px 0;">
+      <p class="section-header" style="margin:0;flex:1;">Race PRs</p>
+      ${hasStrava ? `<button id="pr-strava-btn" class="btn btn-secondary btn-sm" style="flex-shrink:0;">🔄 Find from Strava</button>` : ''}
+    </div>
+    ${statusMsg ? `<div style="margin:6px 14px 0;padding:8px 12px;background:var(--bg-surface);border-radius:8px;font-size:13px;color:var(--success);border-left:3px solid var(--success);">${statusMsg}</div>` : ''}
 
+    <div style="height:4px;"></div>
     ${PRESETS.map(preset => {
       const pr = prs.find(p => p.distanceKm === preset.distanceKm)
       return pr ? _prCardHTML(pr, preset.label) : _emptyCardHTML(preset)
@@ -43,6 +49,9 @@ function _render(root) {
   `
 
   _injectStyles()
+
+  // Find from Strava
+  root.querySelector('#pr-strava-btn')?.addEventListener('click', () => _autoDetect(root))
 
   // Preset "Set PR" / "Edit" buttons
   root.querySelectorAll('[data-preset-km]').forEach(btn => {
@@ -235,6 +244,67 @@ function _openModal(root, preset, existing) {
     close()
     _render(root)
   })
+}
+
+// ── Auto-detect from Strava ───────────────────────────────────────────────────
+
+// Distance scan ranges in metres — wide enough to catch GPS drift
+const SCAN_RANGES = {
+  5:    [4700,  5300],
+  10:   [9700,  10300],
+  21.1: [20800, 21500],
+  42.2: [41900, 42600],
+}
+
+function _autoDetect(root) {
+  const raw = localStorage.getItem('hm_strava_activities')
+  if (!raw) return  // button is hidden when no activities, but guard anyway
+
+  const runs = JSON.parse(raw).filter(
+    a => (a.type === 'Run' || a.sport_type === 'Run') && a.distance > 0
+  )
+
+  const prs    = _load()
+  let added    = 0
+  let updated  = 0
+
+  PRESETS.forEach((preset, i) => {
+    const [lo, hi] = SCAN_RANGES[preset.distanceKm]
+    const candidates = runs.filter(a => a.distance >= lo && a.distance <= hi)
+    if (!candidates.length) return
+
+    // Fastest moving time wins
+    const best = candidates.reduce((b, a) => a.moving_time < b.moving_time ? a : b)
+    const existing = prs.find(p => p.distanceKm === preset.distanceKm)
+
+    if (!existing) {
+      prs.push({
+        id:           Date.now() + i,
+        distanceKm:   preset.distanceKm,
+        label:        preset.label,
+        totalSeconds: best.moving_time,
+        raceName:     best.name,
+        date:         best.start_date_local?.split('T')[0] ?? '',
+      })
+      added++
+    } else if (best.moving_time < existing.totalSeconds) {
+      existing.totalSeconds = best.moving_time
+      existing.raceName     = best.name
+      existing.date         = best.start_date_local?.split('T')[0] ?? ''
+      updated++
+    }
+  })
+
+  if (added + updated === 0) {
+    _render(root, '✓ No new PRs found — your existing times are already your best, or no matching runs in your history.')
+    return
+  }
+
+  _save(prs)
+  const parts = []
+  if (added)   parts.push(`${added} new PR${added   > 1 ? 's' : ''} added`)
+  if (updated) parts.push(`${updated} PR${updated > 1 ? 's' : ''} updated`)
+  _render(root, `✓ ${parts.join(' · ')} from your Strava history`)
 }
 
 // ── Storage ───────────────────────────────────────────────────────────────────
