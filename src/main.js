@@ -3,12 +3,13 @@ import { initHeatmap } from './features/heatmap.js'
 import { initShoes }   from './features/shoes.js'
 import { initFuel }    from './features/fuel.js'
 import { initZones }   from './features/zones.js'
+import { initPRs }     from './features/prs.js'
 
 // ── Tab routing ──────────────────────────────────────
 const tabs   = document.querySelectorAll('.tab-btn')
 const panels = document.querySelectorAll('.tab-panel')
 
-let initialized = { heatmap: false, shoes: false, fuel: false, zones: false }
+let initialized = { heatmap: false, shoes: false, fuel: false, zones: false, prs: false }
 
 function activateTab(name) {
   tabs.forEach(t => {
@@ -26,6 +27,7 @@ function activateTab(name) {
     if (name === 'shoes')   initShoes(document.getElementById('shoes-root'))
     if (name === 'fuel')    initFuel(document.getElementById('fuel-root'))
     if (name === 'zones')   initZones(document.getElementById('zones-root'))
+    if (name === 'prs')     initPRs(document.getElementById('prs-root'))
   }
 }
 
