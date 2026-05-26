@@ -1,4 +1,5 @@
 // Routes — Strava activities as stacked transparent polylines + run list
+import { getZones, zoneIndexForHR } from '../lib/zones.js'
 
 const CREDS_KEY      = 'hm_strava_creds'
 const TOKENS_KEY     = 'hm_strava_tokens'
@@ -285,12 +286,23 @@ function _renderRunList(root, activities) {
     <div class="rt-list-header">
       ${activities.length} runs${noRoute ? ` · ${noRoute} without GPS hidden` : ''}
     </div>
-    ${withRoutes.map(a => {
+    ${(() => {
+      const zones = getZones()
+      return withRoutes.map(a => {
       const km   = (a.distance / 1000).toFixed(2)
       const pace = _formatPace(a.moving_time, a.distance)
       const time = _formatDuration(a.moving_time)
       const date = new Date(a.start_date_local).toLocaleDateString('en-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-      const hr   = a.average_heartrate ? `· <span style="color:#ef4444;">♥ ${Math.round(a.average_heartrate)}</span>` : ''
+      const hr   = (() => {
+        if (!a.average_heartrate) return ''
+        const bpm = Math.round(a.average_heartrate)
+        const zi  = zones ? zoneIndexForHR(bpm, zones) : null
+        if (zi !== null) {
+          const z = zones[zi]
+          return `· <span style="background:${z.color}22;color:${z.color};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:700;">Z${z.zone} ♥ ${bpm}</span>`
+        }
+        return `· <span style="color:#ef4444;">♥ ${bpm}</span>`
+      })()
       return `
         <div class="run-list-item" data-id="${a.id}">
           <div class="rli-top">
@@ -302,7 +314,7 @@ function _renderRunList(root, activities) {
             <span class="rli-meta">${pace} /km · ${time} ${hr}</span>
           </div>
         </div>`
-    }).join('')}`
+    }).join('')})()}`
 
   inner.querySelectorAll('.run-list-item').forEach(el => {
     el.addEventListener('click', () => _selectRun(parseInt(el.dataset.id)))
