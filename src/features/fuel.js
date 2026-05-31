@@ -272,25 +272,13 @@ function _renderAmIReady(el, targetKm) {
     </div>`
 }
 
-// ── Race Morning Timeline ─────────────────────────────────────────────────────
+// ── Race Weekend Timeline ─────────────────────────────────────────────────────
 
 function _renderTimeline(startTime, travelMin, distanceKm) {
   const [sh, sm]   = startTime.split(':').map(Number)
   const startTotal = sh * 60 + sm   // minutes since midnight
   const travel     = parseInt(travelMin) || 60
   const wakeOff    = distanceKm >= 30 ? -240 : distanceKm >= 15 ? -210 : -150
-
-  const events = [
-    { off: wakeOff,        icon: '⏰', label: 'Wake up',               desc: 'Set multiple alarms — not the morning to oversleep.' },
-    { off: wakeOff + 30,   icon: '🍳', label: 'Breakfast',             desc: 'Familiar, carb-heavy meal: oatmeal, bagel, banana. Zero new foods on race day.' },
-    { off: -(travel + 45), icon: '🚗', label: 'Leave home',            desc: 'Build in buffer for traffic, parking, and transit surprises.' },
-    { off: -45,            icon: '🏟️', label: 'Arrive at venue',       desc: 'Pick up bib if needed. Find bag drop and locate your start corral.' },
-    { off: -35,            icon: '🚻', label: 'Bathroom stop',          desc: 'Do this before warming up — race lineups can be very long.' },
-    { off: -22,            icon: '🏃', label: 'Warm up',               desc: '8–10 min easy jog + a few short strides. Gets the legs firing before the gun.' },
-    { off: -12,            icon: '🍯', label: 'Pre-race gel',          desc: distanceKm >= 15 ? 'Caffeine gel if you use one. Chase with 200 mL water.' : 'Optional for shorter races — skip if you haven\'t practised with gels.' },
-    { off: -6,             icon: '📍', label: 'Into your start corral', desc: 'Find your pace group. Trust your training. Relax and breathe.' },
-    { off: 0,              icon: '🏁', label: 'Race start!',            desc: '', highlight: true },
-  ]
 
   function fmtTime(off) {
     const t = ((startTotal + off) % 1440 + 1440) % 1440
@@ -299,20 +287,84 @@ function _renderTimeline(startTime, travelMin, distanceKm) {
     return `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`
   }
 
+  // Night-before events — times calculated relative to wake time so they
+  // automatically adjust for any race start time
+  const nightEvents = [
+    { off: wakeOff - 10*60, icon: '🍝', label: 'Dinner (night before)',
+      desc: 'Familiar carb-heavy meal — pasta, rice, or potato. Moderate portions; don\'t stuff yourself. Avoid high-fibre veg, spicy food, or anything you haven\'t eaten before a long run.' },
+    { off: wakeOff - 9*60,  icon: '👟', label: 'Gear check',
+      desc: 'Lay out everything: bib + safety pins, race belt, shoes, socks, watch (charged), gels counted, throwaway layers. Pre-set coffee maker. Nothing left to find at 4 AM.' },
+    { off: wakeOff - 510,   icon: '💧', label: 'Final hydration',
+      desc: 'Sip 400–500 mL water. Urine should be pale yellow. Don\'t overdrink — stop well before bed to avoid bathroom wake-ups disrupting sleep.' },
+    { off: wakeOff - 8*60,  icon: '😴', label: 'Lights out',
+      desc: 'Aim for 7–8 hrs. Pre-race nerves are completely normal — even lying down quietly counts as recovery. Put your phone on Do Not Disturb; double-check alarms are set.' },
+  ]
+
+  const morningEvents = [
+    { off: wakeOff,        icon: '⏰', label: 'Wake up',               desc: 'Set two alarms — not the morning to oversleep.' },
+    { off: wakeOff + 30,   icon: '🍳', label: 'Breakfast',             desc: 'Familiar carb-heavy meal: oatmeal, bagel, or banana. Coffee if that\'s your normal routine — don\'t experiment today. Zero new foods.' },
+    { off: -(travel + 45), icon: '🚗', label: 'Leave home',            desc: 'Build in buffer for traffic, parking, and transit surprises.' },
+    { off: -45,            icon: '🏟️', label: 'Arrive at venue',       desc: 'Pick up bib if needed. Locate bag drop and your start corral before anything else.' },
+    { off: -35,            icon: '🚻', label: 'Bathroom stop',          desc: 'Do this before warming up — race port-a-potty lineups get very long.' },
+    { off: -22,            icon: '🏃', label: 'Warm up',               desc: '8–10 min easy jog + a few short strides. Gets the legs firing and shakes off stiffness before the gun.' },
+    { off: -12,            icon: '🍯', label: 'Pre-race gel',          desc: distanceKm >= 15 ? 'Caffeine gel if that\'s your routine. Chase with 200 mL water — never dry.' : 'Optional for shorter races — skip it if you haven\'t practised with gels in training.' },
+    { off: -6,             icon: '📍', label: 'Into your start corral', desc: 'Find your pace group. Trust your training. Relax, breathe, smile.' },
+    { off: 0,              icon: '🏁', label: 'Race start!',            desc: '', highlight: true },
+  ]
+
+  const avoids = [
+    { icon: '🍺', text: 'Alcohol — even one drink disrupts sleep quality and hydration for 24 hours' },
+    { icon: '🌶️', text: 'New or spicy foods — save restaurant experiments for the post-race meal' },
+    { icon: '🏃', text: 'Hard training runs — taper shakeout is 20–30 min easy max, the day before' },
+    { icon: '👟', text: 'New shoes or gear — race in exactly what you trained in, nothing untested' },
+    { icon: '📺', text: 'Staying up late — the night two days before matters as much as race night' },
+    { icon: '💊', text: 'NSAIDs before or during the race (ibuprofen/naproxen) — serious kidney risk at race effort' },
+  ]
+
+  function renderEvent(ev, i, arr) {
+    return `
+      <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;${i < arr.length - 1 ? 'border-bottom:1px solid var(--bg-raised);' : ''}">
+        <div style="min-width:70px;text-align:right;flex-shrink:0;padding-top:1px;">
+          <span style="font-size:${ev.highlight ? 14 : 12}px;font-weight:700;color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${fmtTime(ev.off)}</span>
+        </div>
+        <div style="font-size:${ev.highlight ? 18 : 15}px;flex-shrink:0;margin-top:-1px;">${ev.icon}</div>
+        <div style="flex:1;">
+          <div style="font-size:${ev.highlight ? 14 : 13}px;font-weight:${ev.highlight ? 800 : 600};color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${ev.label}</div>
+          ${ev.desc ? `<div style="font-size:12px;color:var(--text-muted);margin-top:1px;line-height:1.4;">${ev.desc}</div>` : ''}
+        </div>
+      </div>`
+  }
+
   return `
-    <p class="section-header">Race Morning Timeline</p>
+    <p class="section-header">Race Weekend Timeline</p>
     <div class="card">
       <div class="card-body" style="padding:6px 14px;">
-        ${events.map((ev, i) => `
-          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;${i < events.length - 1 ? 'border-bottom:1px solid var(--bg-raised);' : ''}">
-            <div style="min-width:70px;text-align:right;flex-shrink:0;padding-top:1px;">
-              <span style="font-size:${ev.highlight ? 14 : 12}px;font-weight:700;color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${fmtTime(ev.off)}</span>
-            </div>
-            <div style="font-size:${ev.highlight ? 18 : 15}px;flex-shrink:0;margin-top:-1px;">${ev.icon}</div>
-            <div style="flex:1;">
-              <div style="font-size:${ev.highlight ? 14 : 13}px;font-weight:${ev.highlight ? 800 : 600};color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${ev.label}</div>
-              ${ev.desc ? `<div style="font-size:12px;color:var(--text-muted);margin-top:1px;line-height:1.4;">${ev.desc}</div>` : ''}
-            </div>
+
+        <!-- Night before -->
+        <div style="padding:8px 0 4px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);">🌙 Night Before</span>
+          <div style="flex:1;height:1px;background:var(--bg-raised);"></div>
+        </div>
+        ${nightEvents.map((ev, i, arr) => renderEvent(ev, i, arr)).join('')}
+
+        <!-- Race morning -->
+        <div style="padding:12px 0 4px;display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);">☀️ Race Morning</span>
+          <div style="flex:1;height:1px;background:var(--bg-raised);"></div>
+        </div>
+        ${morningEvents.map((ev, i, arr) => renderEvent(ev, i, arr)).join('')}
+
+      </div>
+    </div>
+
+    <!-- What NOT to do -->
+    <div class="card" style="border:1px solid #7f1d1d44;margin-top:0;">
+      <div class="card-body">
+        <div style="font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:0.5px;color:#ef4444;margin-bottom:10px;">❌ What NOT to do</div>
+        ${avoids.map((a, i) => `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;${i ? 'border-top:1px solid var(--bg-raised);' : ''}">
+            <div style="font-size:15px;flex-shrink:0;">${a.icon}</div>
+            <div style="font-size:13px;line-height:1.4;">${a.text}</div>
           </div>`).join('')}
       </div>
     </div>`
