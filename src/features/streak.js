@@ -1,9 +1,10 @@
 // Consistency & Streak tracker — appended to the bottom of the run list
 
-const LONG_RUN_KM    = 14            // km threshold for a "long run"
-const LOOKBACK_WEEKS = 8             // weeks of history to analyse
-const TARGET_KEY     = 'runsPerWeekTarget'
-const ACTS_KEY       = 'hm_strava_activities'
+const LONG_RUN_KM          = 14     // fallback long-run threshold (km) when data is sparse
+const LOOKBACK_WEEKS       = 8      // weeks of history to analyse
+const DELOAD_DROP_THRESHOLD = 0.30  // ≥30% volume drop vs prior 3-week avg = deload week
+const TARGET_KEY           = 'runsPerWeekTarget'
+const ACTS_KEY             = 'hm_strava_activities'
 
 /**
  * Appends the Consistency & Streaks section to `container` and binds events.
@@ -26,7 +27,7 @@ export function initStreakSection(container) {
 function _weekStartMs(date) {
   const d = new Date(date)
   d.setHours(0, 0, 0, 0)
-  const dow = d.getDay()                          // 0 = Sun
+  const dow = d.getDay()                            // 0 = Sun
   d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1))
   return d.getTime()
 }
@@ -34,6 +35,20 @@ function _weekStartMs(date) {
 /** Local-time YYYY-MM-DD (avoids UTC midnight offset issues). */
 function _ds(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * Returns true if the week starting at `ws` (ms) is a deload week:
+ *   – at least one run that week (rest weeks are not deloads)
+ *   – weekly km is ≥ DELOAD_DROP_THRESHOLD lower than the avg of the 3 prior weeks
+ */
+function _isDeload(ws, weekData) {
+  const w = weekData.get(ws)
+  if (!w || w.count === 0) return false             // no runs = rest week
+  const WK   = 7 * 86400000
+  const avg3 = [ws - WK, ws - 2 * WK, ws - 3 * WK]
+    .reduce((s, pws) => s + (weekData.get(pws)?.km || 0), 0) / 3
+  return avg3 > 0 && w.km < avg3 * (1 - DELOAD_DROP_THRESHOLD)
 }
 
 // ── Internal render ───────────────────────────────────────────────────────────
@@ -54,26 +69,51 @@ function _render(el) {
     dateKm.set(d, (dateKm.get(d) || 0) + a.distance / 1000)
   })
 
-  // ── Week-bucket map: weekStartMs → { count, hasLong, km } ───────────────────
+  // ── Week-bucket map: weekStartMs → { count, km, maxRun, hasLong } ────────────
+  // hasLong is intentionally left false here; set after dynamicLongRunKm is known.
 
   const weekData = new Map()
   runs.forEach(a => {
     const ws = _weekStartMs(new Date(a.start_date_local))
-    if (!weekData.has(ws)) weekData.set(ws, { count: 0, hasLong: false, km: 0 })
+    if (!weekData.has(ws)) weekData.set(ws, { count: 0, km: 0, maxRun: 0, hasLong: false })
     const w = weekData.get(ws)
     w.count++
     w.km += a.distance / 1000
-    if (a.distance / 1000 >= LONG_RUN_KM) w.hasLong = true
+    if (a.distance / 1000 > w.maxRun) w.maxRun = a.distance / 1000
   })
 
   const now = new Date(); now.setHours(12, 0, 0, 0)
   const thisWeekMs = _weekStartMs(now)
 
-  // Last LOOKBACK_WEEKS *complete* weeks (oldest first → most recent first in array)
+  // Last LOOKBACK_WEEKS complete weeks (index 0 = most recently completed week)
   const pastWeeks = Array.from(
     { length: LOOKBACK_WEEKS },
     (_, i) => thisWeekMs - (i + 1) * 7 * 86400000
-  )  // index 0 = last week, index 7 = 8 weeks ago
+  )
+
+  // ── Dynamic long-run threshold ────────────────────────────────────────────────
+  // Uses 75% of the average "longest run of the week" across recent complete weeks.
+  // Adapts the threshold to the runner's actual training level rather than a fixed
+  // value — a 5K runner and a marathon runner get different thresholds.
+  // Falls back to LONG_RUN_KM when fewer than 4 past weeks have data.
+
+  const weeklyMaxRuns = pastWeeks
+    .map(ws => weekData.get(ws)?.maxRun || 0)
+    .filter(k => k > 0)
+
+  const dynamicLongRunKm = weeklyMaxRuns.length >= 4
+    ? Math.max(5, Math.round(
+        weeklyMaxRuns.reduce((s, k) => s + k, 0) / weeklyMaxRuns.length * 0.75
+      ))
+    : LONG_RUN_KM
+
+  // Set hasLong for all weeks using the computed threshold
+  weekData.forEach(w => { w.hasLong = w.maxRun >= dynamicLongRunKm })
+
+  // ── Deload week detection ─────────────────────────────────────────────────────
+
+  const deloadWeekMsSet = new Set()
+  weekData.forEach((_, ws) => { if (_isDeload(ws, weekData)) deloadWeekMsSet.add(ws) })
 
   // ── Auto target (avg runs/week over last LOOKBACK_WEEKS complete weeks) ──────
 
@@ -83,30 +123,40 @@ function _render(el) {
   const stored        = parseInt(localStorage.getItem(TARGET_KEY))
   const target        = isCustom && !isNaN(stored) ? stored : autoTarget
 
-  // ── 1. Weekly target hit rate ────────────────────────────────────────────────
+  // ── 1. Weekly target hit rate ─────────────────────────────────────────────────
+
   const weeksOnTarget = pastWeeks.filter(ws => (weekData.get(ws)?.count || 0) >= target).length
 
-  // ── 2. Long run streak (consecutive weeks back from last complete week) ──────
+  // ── 2. Long run streak ────────────────────────────────────────────────────────
+  // Iterates complete weeks from most recent backward.
+  // Deload week with any run: counts (long-run threshold is waived).
+  // Normal week with a qualifying long run: counts.
+  // Rest week or normal week without a long run: streak ends.
+
   let longRunStreak = 0
   for (const ws of pastWeeks) {
-    if (weekData.get(ws)?.hasLong) longRunStreak++
-    else break
+    const w        = weekData.get(ws)
+    const isDeload = deloadWeekMsSet.has(ws)
+    if (!w || w.count === 0) break              // rest week → streak ends
+    if (isDeload || w.hasLong) longRunStreak++  // deload (any run) or long run → ok
+    else break                                  // normal week, no long run → ends
   }
 
-  // ── 3. Current week runs vs target ──────────────────────────────────────────
+  // ── 3. Current week progress ──────────────────────────────────────────────────
+
   const thisWeekCount = weekData.get(thisWeekMs)?.count || 0
   const weekDone      = thisWeekCount >= target
 
-  // ── Stats (for bottom row) ───────────────────────────────────────────────────
+  // ── Stats (bottom row) ────────────────────────────────────────────────────────
+
   const avgKm   = +(pastWeeks.reduce((s, ws) => s + (weekData.get(ws)?.km    || 0), 0) / LOOKBACK_WEEKS).toFixed(1)
   const avgRuns = +(totalPastRuns / LOOKBACK_WEEKS).toFixed(1)
 
-  // ── Activity calendar: last 16 weeks ────────────────────────────────────────
+  // ── Activity calendar: last 16 weeks ─────────────────────────────────────────
 
   const today    = new Date(); today.setHours(12, 0, 0, 0)
   const todayStr = _ds(today)
 
-  // calStart = Monday at least 111 days before today
   const calStart = new Date(today)
   calStart.setDate(calStart.getDate() - 111)
   const calDow = calStart.getDay()
@@ -132,6 +182,7 @@ function _render(el) {
     return '#f97316'
   }
 
+  // CSS grid: row 0 (12 px) = month / deload labels, rows 1–7 (16 px each) = Mon–Sun
   let calHTML =
     `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch;padding:4px 0 8px;">` +
     `<div style="display:grid;` +
@@ -139,24 +190,41 @@ function _render(el) {
       `grid-template-rows:12px ${Array(7).fill('16px').join(' ')};` +
       `gap:2px;width:fit-content;">`
 
+  // Corner cell (empty)
   calHTML += '<div></div>'
+
+  // Month label row — deload weeks show a blue ↓ after the month name (or alone)
   calWeeks.forEach((week, wi) => {
-    const d    = new Date(week[0].ds + 'T12:00:00')
-    const prev = wi > 0 ? new Date(calWeeks[wi - 1][0].ds + 'T12:00:00') : null
-    const show = !prev || d.getMonth() !== prev.getMonth()
+    const weekMs     = _weekStartMs(new Date(week[0].ds + 'T12:00:00'))
+    const isDeloadWk = deloadWeekMsSet.has(weekMs)
+    const d          = new Date(week[0].ds + 'T12:00:00')
+    const prev       = wi > 0 ? new Date(calWeeks[wi - 1][0].ds + 'T12:00:00') : null
+    const showMonth  = !prev || d.getMonth() !== prev.getMonth()
+
+    let label = showMonth ? d.toLocaleString('default', { month: 'short' }) : ''
+    if (isDeloadWk) label += `<span style="color:#60a5fa;"> ↓</span>`
+
     calHTML +=
       `<div style="font-size:9px;color:var(--text-muted);overflow:visible;` +
-      `white-space:nowrap;line-height:12px;">${show ? d.toLocaleString('default', { month: 'short' }) : ''}</div>`
+      `white-space:nowrap;line-height:12px;">${label}</div>`
   })
 
+  // Day rows (Mon → Sun). Deload-week cells with runs get a subtle blue ring.
   ;['M', '', 'W', '', 'F', '', 'S'].forEach((lbl, di) => {
     calHTML +=
       `<div style="font-size:9px;color:var(--text-muted);` +
       `text-align:right;line-height:16px;padding-right:2px;">${lbl}</div>`
+
     calWeeks.forEach(week => {
-      const c = week[di]
+      const weekMs     = _weekStartMs(new Date(week[0].ds + 'T12:00:00'))
+      const isDeloadWk = deloadWeekMsSet.has(weekMs)
+      const c          = week[di]
+      const ring       = isDeloadWk && c.km > 0 && c.ds <= todayStr
+        ? 'outline:1px solid #3b82f660;outline-offset:-1px;'
+        : ''
       calHTML +=
-        `<div style="width:16px;height:16px;border-radius:2px;background:${cellColor(c.km, c.ds)};"></div>`
+        `<div style="width:16px;height:16px;border-radius:2px;` +
+        `background:${cellColor(c.km, c.ds)};${ring}"></div>`
     })
   })
 
@@ -171,7 +239,7 @@ function _render(el) {
       </div>
       <div style="padding:10px 14px 16px;">
 
-        <!-- Three stat cards -->
+        <!-- Stat cards -->
         <div style="display:flex;gap:8px;margin-bottom:14px;">
 
           <!-- 1: Weekly target hit rate -->
@@ -183,13 +251,14 @@ function _render(el) {
             <div style="font-size:10px;color:var(--text-muted);margin-top:2px;line-height:1.3;">weeks on<br>target</div>
           </div>
 
-          <!-- 2: Long run streak -->
+          <!-- 2: Long run streak (deload-aware) -->
           <div style="flex:1;background:var(--bg-raised);border-radius:10px;padding:10px 6px;text-align:center;">
             <div style="font-size:20px;line-height:1.3;">🏃</div>
             <div style="font-size:18px;font-weight:800;color:${longRunStreak > 0 ? 'var(--accent)' : 'var(--text-muted)'};line-height:1.2;">
               ${longRunStreak}<span style="font-size:12px;font-weight:600;color:var(--text-muted);">wk</span>
             </div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:2px;line-height:1.3;">long run<br>streak</div>
+            <div style="font-size:9px;color:var(--text-muted);margin-top:2px;">≥${dynamicLongRunKm}km · deload ok</div>
           </div>
 
           <!-- 3: Current week progress -->
@@ -207,14 +276,15 @@ function _render(el) {
         <!-- GitHub-style activity calendar -->
         ${calHTML}
 
-        <!-- Colour legend -->
-        <div style="display:flex;align-items:center;gap:5px;justify-content:flex-end;margin-bottom:12px;">
+        <!-- Legend -->
+        <div style="display:flex;align-items:center;gap:5px;justify-content:flex-end;margin-bottom:4px;">
           <div style="font-size:10px;color:var(--text-muted);">Less</div>
           ${['var(--bg-raised)', '#7c3aed55', '#f59e0b', '#f97316'].map(c =>
             `<div style="width:12px;height:12px;border-radius:2px;background:${c};flex-shrink:0;"></div>`
           ).join('')}
           <div style="font-size:10px;color:var(--text-muted);">More</div>
         </div>
+        <div style="font-size:10px;color:#60a5fa;text-align:right;margin-bottom:12px;">↓ = deload week detected</div>
 
         <!-- Stats row -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
