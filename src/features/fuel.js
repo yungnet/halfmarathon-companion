@@ -4,11 +4,22 @@ const STORE_KEY = 'hm_fuel_prefs'
 const ACTS_KEY  = 'hm_strava_activities'
 const PRS_KEY   = 'hm_prs'
 
+// ── Road to Race Day constants ────────────────────────────────────────────────
+const TAPER_WEEK3_DAYS_MAX = 28
+const TAPER_WEEK2_DAYS_MAX = 21
+const RACE_WEEK_DAYS_MAX   = 14
+const RACE_IMMINENT_DAYS   = 7
+const TAPER_WEEK3_PCT      = 0.80
+const TAPER_WEEK2_PCT      = 0.60
+const RACE_WEEK_PCT        = 0.40
+const PEAK_LONG_RUN_RATIO  = 0.85
+
 export function initFuel(root) {
   const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}')
 
   root.innerHTML = `
     <div id="ami-root"></div>
+    <div id="road-root"></div>
 
     <p class="section-header">Race Day Fuel</p>
     <div class="card">
@@ -82,6 +93,7 @@ export function initFuel(root) {
 
   // Render Am I Ready immediately with saved distance
   _renderAmIReady(root.querySelector('#ami-root'), saved.distance || 21.1)
+  _renderRoadToRaceDay(root.querySelector('#road-root'), saved.raceDate, saved.distance || 21.1)
 
   // Distance preset buttons
   root.querySelectorAll('.dist-preset').forEach(btn => {
@@ -114,6 +126,7 @@ export function initFuel(root) {
     localStorage.setItem(STORE_KEY, JSON.stringify({ weight, pace: paceStr, distance, raceDate: date, startTime, temp, travelMin, level }))
 
     _renderAmIReady(root.querySelector('#ami-root'), distance)
+    _renderRoadToRaceDay(root.querySelector('#road-root'), date, distance)
     _renderResults(root, { weight, paceMin, distance, date, startTime, temp, travelMin, level })
   })
 
@@ -270,6 +283,224 @@ function _renderAmIReady(el, targetKm) {
         </div>
       </div>
     </div>`
+}
+
+// ── Road to Race Day ──────────────────────────────────────────────────────────
+
+function _renderRoadToRaceDay(el, raceDate, distanceKm) {
+  const km = parseFloat(distanceKm) || 21.1
+
+  if (!raceDate) {
+    el.innerHTML = `
+      <p class="section-header">Road to Race Day</p>
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-body" style="text-align:center;padding:20px 16px;">
+          <div style="font-size:13px;color:var(--text-muted);">Enter your race date above to see your training road map.</div>
+        </div>
+      </div>`
+    return
+  }
+
+  // ── Date maths ─────────────────────────────────────────────────────────────
+  const raceDateMs = new Date(raceDate + 'T00:00:00').getTime()
+  const todayD     = new Date(); todayD.setHours(0, 0, 0, 0)
+  const todayMs    = todayD.getTime()
+  const daysOut    = Math.ceil((raceDateMs - todayMs) / 86400000)
+
+  if (daysOut <= 0) {
+    el.innerHTML = `
+      <p class="section-header">Road to Race Day</p>
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-body" style="text-align:center;padding:24px 16px;">
+          <div style="font-size:28px;margin-bottom:8px;">🏁</div>
+          <div style="font-size:15px;font-weight:700;color:var(--accent);">${daysOut === 0 ? 'Race day — go get it!' : 'Race complete — well done!'}</div>
+        </div>
+      </div>`
+    return
+  }
+
+  // ── Strava data ─────────────────────────────────────────────────────────────
+  const raw     = localStorage.getItem(ACTS_KEY)
+  const allRuns = raw
+    ? JSON.parse(raw).filter(a => (a.type === 'Run' || a.sport_type === 'Run') && a.distance > 500)
+    : []
+  const now = Date.now()
+  const W8  = 56 * 86400000
+  const r8w = allRuns.filter(a => now - new Date(a.start_date_local).getTime() < W8)
+
+  // Week buckets for peak week km
+  const weekBuckets = new Map()
+  r8w.forEach(a => {
+    const ws = _roadWeekStart(new Date(a.start_date_local))
+    const b  = weekBuckets.get(ws) || { km: 0 }
+    b.km    += a.distance / 1000
+    weekBuckets.set(ws, b)
+  })
+  const peakWeekKm = weekBuckets.size
+    ? Math.max(...[...weekBuckets.values()].map(b => b.km))
+    : 0
+  const longestKm = r8w.length ? Math.max(...r8w.map(a => a.distance / 1000)) : 0
+
+  // Current week km
+  const dayOfWeek     = todayD.getDay()              // 0 Sun … 6 Sat
+  const daysSinceMon  = (dayOfWeek + 6) % 7          // Mon=0 … Sun=6
+  const thisWeekMonMs = todayMs - daysSinceMon * 86400000
+  const currWeekKm    = weekBuckets.get(thisWeekMonMs)?.km ?? 0
+
+  // ── Phase detection ─────────────────────────────────────────────────────────
+  let phase, phaseLabel, taperPct = 0, taperTarget = 0
+  if (daysOut <= RACE_IMMINENT_DAYS) {
+    phase      = 'imminent'
+    phaseLabel = `🏁 Race in ${daysOut} day${daysOut !== 1 ? 's' : ''} — trust your training!`
+  } else if (daysOut <= RACE_WEEK_DAYS_MAX) {
+    phase = 'raceweek'; taperPct = RACE_WEEK_PCT
+    phaseLabel  = `Race week — ${daysOut} days to go`
+    taperTarget = peakWeekKm * taperPct
+  } else if (daysOut <= TAPER_WEEK2_DAYS_MAX) {
+    phase = 'taper2'; taperPct = TAPER_WEEK2_PCT
+    phaseLabel  = `Taper week 2 — ${daysOut} days to go`
+    taperTarget = peakWeekKm * taperPct
+  } else if (daysOut <= TAPER_WEEK3_DAYS_MAX) {
+    phase = 'taper3'; taperPct = TAPER_WEEK3_PCT
+    phaseLabel  = `Taper week 3 — ${daysOut} days to go`
+    taperTarget = peakWeekKm * taperPct
+  } else {
+    const weeksOut = Math.ceil(daysOut / 7)
+    phase      = 'build'
+    phaseLabel = `Build phase — ${weeksOut} week${weeksOut !== 1 ? 's' : ''} to race`
+  }
+  const inTaper = ['taper3', 'taper2', 'raceweek'].includes(phase)
+
+  // ── Long run progression ────────────────────────────────────────────────────
+  const targetPeak   = km * PEAK_LONG_RUN_RATIO   // e.g. 21.1 × 0.85 ≈ 17.9 km
+  const taperStartMs = raceDateMs - 21 * 86400000  // 3 weeks before race
+  const daysToTaper  = Math.ceil((taperStartMs - todayMs) / 86400000)
+  const weeksToTaper = Math.max(0, Math.ceil(daysToTaper / 7))
+
+  let progressIcon, progressMsg, progressStatus, weeklyIncrement = 0
+
+  if (!raw) {
+    progressIcon = '🔗'; progressStatus = 'nodata'
+    progressMsg  = 'Connect Strava in the Runs tab to see your long run plan'
+  } else if (longestKm >= targetPeak) {
+    progressIcon = '✅'; progressStatus = 'solid'
+    progressMsg  = `Long run base is solid (${longestKm.toFixed(1)} km) — protect it through taper`
+  } else if (weeksToTaper <= 0) {
+    progressIcon = '🔄'; progressStatus = 'tapering'
+    progressMsg  = longestKm > 0
+      ? `In taper now — ${longestKm.toFixed(1)} km was your peak long run`
+      : 'In taper now — no recent long run data found'
+  } else {
+    weeklyIncrement = (targetPeak - longestKm) / weeksToTaper
+    if (weeklyIncrement <= 1.5) {
+      progressIcon = '✅'; progressStatus = 'comfortable'
+      progressMsg  = `You have time to build comfortably (+${weeklyIncrement.toFixed(2)} km/week)`
+    } else if (weeklyIncrement <= 2.5) {
+      progressIcon = '⚠️'; progressStatus = 'tight'
+      progressMsg  = `Tight but doable — prioritise your long runs (+${weeklyIncrement.toFixed(2)} km/week)`
+    } else {
+      progressIcon = '❌'; progressStatus = 'aggressive'
+      progressMsg  = `Very aggressive build needed (+${weeklyIncrement.toFixed(1)} km/week) — consider adjusting your goal or race`
+    }
+  }
+
+  const showTable = ['comfortable', 'tight'].includes(progressStatus) && weeksToTaper > 0
+
+  // ── Build week-by-week table rows ───────────────────────────────────────────
+  const tableRows = []
+  if (showTable) {
+    const daysUntilSun = dayOfWeek === 0 ? 0 : 7 - dayOfWeek   // 0 if today is Sun
+    for (let w = 1; w <= weeksToTaper; w++) {
+      const sunMs  = todayMs + (daysUntilSun + (w - 1) * 7) * 86400000
+      const target = Math.min(longestKm + weeklyIncrement * w, targetPeak)
+      tableRows.push({ label: `Week ${w}`, date: _fmtDateShort(new Date(sunMs)), target, type: 'build' })
+    }
+    // 3 taper rows computed back from race date
+    tableRows.push({ label: '🔄 Taper W3', date: _fmtDateShort(new Date(raceDateMs - 14 * 86400000)), target: targetPeak * TAPER_WEEK3_PCT, type: 'taper' })
+    tableRows.push({ label: '🔄 Taper W2', date: _fmtDateShort(new Date(raceDateMs - 7  * 86400000)), target: targetPeak * TAPER_WEEK2_PCT, type: 'taper' })
+    tableRows.push({ label: '🏁 Race Day',  date: _fmtDateShort(new Date(raceDateMs)),                 target: km,                          type: 'race'  })
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  el.innerHTML = `
+    <p class="section-header">Road to Race Day</p>
+    <div class="card" style="margin-bottom:0;">
+      <div class="card-body">
+
+        <!-- Phase badge -->
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-raised);border-radius:10px;margin-bottom:14px;">
+          <div style="font-size:20px;">📅</div>
+          <div style="flex:1;">
+            <div style="font-size:14px;font-weight:700;">${phaseLabel}</div>
+            ${peakWeekKm > 0 ? `<div style="font-size:12px;color:var(--text-muted);">Peak week: ${peakWeekKm.toFixed(0)} km</div>` : ''}
+          </div>
+        </div>
+
+        ${inTaper && peakWeekKm > 0 ? `
+        <!-- Taper volume tracker -->
+        <div style="margin-bottom:14px;padding:12px 14px;background:var(--bg-raised);border-radius:10px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:8px;">This week's volume</div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+            <div style="font-size:22px;font-weight:800;color:${currWeekKm > taperTarget ? '#ef4444' : 'var(--accent)'};">${currWeekKm.toFixed(1)} km</div>
+            <div style="font-size:12px;color:var(--text-muted);">target ≤ ${taperTarget.toFixed(0)} km&nbsp;(${Math.round(taperPct * 100)}% of peak)</div>
+          </div>
+          <div style="height:6px;background:var(--bg-card);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${(Math.min(100, taperTarget > 0 ? currWeekKm / taperTarget * 100 : 0)).toFixed(1)}%;background:${currWeekKm > taperTarget ? '#ef4444' : 'var(--accent)'};border-radius:3px;transition:width 0.3s;"></div>
+          </div>
+          ${currWeekKm > taperTarget ? `<div style="margin-top:6px;font-size:12px;color:#ef4444;">⚠️ Over taper target — keep remaining days easy</div>` : ''}
+        </div>` : ''}
+
+        <!-- Long run progression -->
+        <div>
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:8px;">Long Run Progression · target ${targetPeak.toFixed(0)} km</div>
+          <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:var(--bg-raised);border-radius:8px;${showTable ? 'margin-bottom:8px;' : ''}">
+            <div style="font-size:15px;flex-shrink:0;margin-top:1px;">${progressIcon}</div>
+            <div style="font-size:13px;line-height:1.5;">${progressMsg}</div>
+          </div>
+          ${showTable ? `
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text-muted);padding:0 2px 8px;">
+            <span>Current: <strong style="color:var(--text);">${longestKm.toFixed(1)} km</strong></span>
+            <span>${weeksToTaper} week${weeksToTaper !== 1 ? 's' : ''} to build</span>
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:13px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left;padding:5px 4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);border-bottom:1px solid var(--bg-raised);">Week</th>
+                  <th style="text-align:left;padding:5px 4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);border-bottom:1px solid var(--bg-raised);">Date</th>
+                  <th style="text-align:right;padding:5px 4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);border-bottom:1px solid var(--bg-raised);">Target Long Run</th>
+                  <th style="text-align:right;padding:5px 4px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);border-bottom:1px solid var(--bg-raised);">Actual</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tableRows.map((r, i) => {
+                  const isTaper = r.type === 'taper'
+                  const isRace  = r.type === 'race'
+                  return `<tr style="border-top:${i > 0 ? '1px solid #ffffff08' : 'none'};${isTaper ? 'opacity:0.75;' : ''}">
+                    <td style="padding:7px 4px;font-weight:${isRace ? '800' : isTaper ? '500' : '600'};color:${isRace ? 'var(--accent)' : isTaper ? 'var(--text-muted)' : 'var(--text)'};">${r.label}</td>
+                    <td style="padding:7px 4px;font-size:12px;color:${isRace ? 'var(--accent)' : 'var(--text-muted)'};">${r.date}</td>
+                    <td style="text-align:right;padding:7px 4px;font-weight:${isRace ? '800' : '500'};color:${isRace ? 'var(--accent)' : isTaper ? 'var(--text-muted)' : 'var(--text)'};">${r.target.toFixed(1)} km</td>
+                    <td style="text-align:right;padding:7px 4px;color:var(--text-muted);font-size:12px;"></td>
+                  </tr>`
+                }).join('')}
+              </tbody>
+            </table>
+          </div>` : ''}
+        </div>
+
+      </div>
+    </div>`
+}
+
+function _roadWeekStart(date) {
+  const d = new Date(date); d.setHours(0, 0, 0, 0)
+  const day = d.getDay()
+  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
+  return d.getTime()
+}
+
+function _fmtDateShort(d) {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 // ── Race Weekend Timeline ─────────────────────────────────────────────────────
