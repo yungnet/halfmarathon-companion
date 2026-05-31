@@ -89,14 +89,21 @@ function _render(el, standalone) {
   // ── Week-bucket map: weekStartMs → { count, km, maxRun, hasLong } ────────────
   // hasLong is deferred until after dynamicLongRunKm is known.
 
+  // Strava workout_type === 2 means "Long Run"; name matching /\blong/i catches
+  // "Long Run", "longrun", "long-run", etc. while avoiding "along" / "prolong".
+  function _isTaggedLong(a) {
+    return a.workout_type === 2 || /\blong/i.test(a.name || '')
+  }
+
   const weekData = new Map()
   runs.forEach(a => {
     const ws = _weekStartMs(new Date(a.start_date_local))
-    if (!weekData.has(ws)) weekData.set(ws, { count: 0, km: 0, maxRun: 0, hasLong: false })
+    if (!weekData.has(ws)) weekData.set(ws, { count: 0, km: 0, maxRun: 0, hasLong: false, hasTaggedLong: false })
     const w = weekData.get(ws)
     w.count++
     w.km += a.distance / 1000
     if (a.distance / 1000 > w.maxRun) w.maxRun = a.distance / 1000
+    if (_isTaggedLong(a)) w.hasTaggedLong = true
   })
 
   const now = new Date(); now.setHours(12, 0, 0, 0)
@@ -123,7 +130,8 @@ function _render(el, standalone) {
       ))
     : LONG_RUN_KM
 
-  weekData.forEach(w => { w.hasLong = w.maxRun >= dynamicLongRunKm })
+  // A week "has a long run" if: Strava tagged it, the name signals it, OR distance qualifies
+  weekData.forEach(w => { w.hasLong = w.hasTaggedLong || w.maxRun >= dynamicLongRunKm })
 
   // ── Deload week detection ─────────────────────────────────────────────────────
 
