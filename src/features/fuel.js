@@ -1,12 +1,16 @@
-// Race Day Fuel Calculator
+// Race Day Fuel Calculator · Am I Ready? · Race Morning Timeline
 
 const STORE_KEY = 'hm_fuel_prefs'
+const ACTS_KEY  = 'hm_strava_activities'
+const PRS_KEY   = 'hm_prs'
 
 export function initFuel(root) {
   const saved = JSON.parse(localStorage.getItem(STORE_KEY) || '{}')
 
   root.innerHTML = `
-    <p class="section-header">Race Info</p>
+    <div id="ami-root"></div>
+
+    <p class="section-header">Race Day Fuel</p>
     <div class="card">
       <div class="card-body">
         <div class="row-2">
@@ -41,9 +45,21 @@ export function initFuel(root) {
             <input id="f-date" type="date" value="${saved.raceDate || ''}" />
           </div>
           <div class="form-group">
+            <label>Start time</label>
+            <input id="f-start" type="time" value="${saved.startTime || '08:00'}" />
+          </div>
+        </div>
+
+        <div class="row-2">
+          <div class="form-group">
             <label>Temp (°C)</label>
             <input id="f-temp" type="number" min="-30" max="50" placeholder="18"
               inputmode="decimal" value="${saved.temp || ''}" />
+          </div>
+          <div class="form-group">
+            <label>Travel to venue (min)</label>
+            <input id="f-travel" type="number" min="5" max="180" placeholder="60"
+              inputmode="numeric" value="${saved.travelMin || ''}" />
           </div>
         </div>
 
@@ -61,7 +77,11 @@ export function initFuel(root) {
     </div>
 
     <div id="fuel-results"></div>
+    <div style="height:16px;"></div>
   `
+
+  // Render Am I Ready immediately with saved distance
+  _renderAmIReady(root.querySelector('#ami-root'), saved.distance || 21.1)
 
   // Distance preset buttons
   root.querySelectorAll('.dist-preset').forEach(btn => {
@@ -73,39 +93,229 @@ export function initFuel(root) {
   // Pace field: auto-insert colon after two digits
   root.querySelector('#f-pace').addEventListener('input', e => {
     let v = e.target.value.replace(/[^0-9:]/g, '')
-    if (v.length === 2 && !v.includes(':') && e.inputType !== 'deleteContentBackward') {
-      v = v + ':'
-    }
+    if (v.length === 2 && !v.includes(':') && e.inputType !== 'deleteContentBackward') v = v + ':'
     e.target.value = v
   })
 
   root.querySelector('#calc-btn').addEventListener('click', () => {
-    const weight   = parseFloat(root.querySelector('#f-weight').value)
-    const paceStr  = root.querySelector('#f-pace').value.trim()
-    const paceMin  = _parsePace(paceStr)
-    const distance = parseFloat(root.querySelector('#f-distance').value) || 21.1
-    const date     = root.querySelector('#f-date').value
-    const temp     = parseFloat(root.querySelector('#f-temp').value)
-    const level    = root.querySelector('#f-level').value
+    const weight    = parseFloat(root.querySelector('#f-weight').value)
+    const paceStr   = root.querySelector('#f-pace').value.trim()
+    const paceMin   = _parsePace(paceStr)
+    const distance  = parseFloat(root.querySelector('#f-distance').value) || 21.1
+    const date      = root.querySelector('#f-date').value
+    const startTime = root.querySelector('#f-start').value   // "HH:MM"
+    const temp      = parseFloat(root.querySelector('#f-temp').value)
+    const travelMin = parseInt(root.querySelector('#f-travel').value) || 60
+    const level     = root.querySelector('#f-level').value
 
-    if (!weight) { root.querySelector('#f-weight').focus(); alert('Please enter your weight.'); return }
-    if (!paceMin) { root.querySelector('#f-pace').focus(); alert('Enter pace as MM:SS (e.g. 7:30 for 7 min 30 sec per km).'); return }
+    if (!weight)  { root.querySelector('#f-weight').focus(); alert('Please enter your weight.'); return }
+    if (!paceMin) { root.querySelector('#f-pace').focus();   alert('Enter pace as MM:SS (e.g. 7:30 for 7 min 30 sec per km).'); return }
 
-    localStorage.setItem(STORE_KEY, JSON.stringify({ weight, pace: paceStr, distance, raceDate: date, temp, level }))
-    _renderResults(root, { weight, paceMin, distance, date, temp, level })
+    localStorage.setItem(STORE_KEY, JSON.stringify({ weight, pace: paceStr, distance, raceDate: date, startTime, temp, travelMin, level }))
+
+    _renderAmIReady(root.querySelector('#ami-root'), distance)
+    _renderResults(root, { weight, paceMin, distance, date, startTime, temp, travelMin, level })
   })
 
   // Auto-calculate if saved prefs exist
   if (saved.weight && saved.pace) {
     const paceMin = _parsePace(saved.pace)
-    if (paceMin) {
-      _renderResults(root, {
-        weight: saved.weight, paceMin,
-        distance: saved.distance || 21.1,
-        date: saved.raceDate, temp: saved.temp, level: saved.level || 'intermediate',
-      })
-    }
+    if (paceMin) _renderResults(root, {
+      weight: saved.weight, paceMin,
+      distance:  saved.distance  || 21.1,
+      date:      saved.raceDate,
+      startTime: saved.startTime,
+      temp:      saved.temp,
+      travelMin: saved.travelMin || 60,
+      level:     saved.level     || 'intermediate',
+    })
   }
+}
+
+// ── Am I Ready? ────────────────────────────────────────────────────────────────
+
+function _renderAmIReady(el, targetKm) {
+  const raw = localStorage.getItem(ACTS_KEY)
+  if (!raw) {
+    el.innerHTML = `
+      <p class="section-header">Am I Ready?</p>
+      <div class="card" style="margin-bottom:0;">
+        <div class="card-body" style="text-align:center;padding:24px 16px;">
+          <div style="font-size:36px;margin-bottom:8px;">🔗</div>
+          <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Connect Strava to see your readiness</div>
+          <div style="font-size:13px;color:var(--text-muted);">Head to the Routes tab first to pull in your training data.</div>
+        </div>
+      </div>`
+    return
+  }
+
+  const km  = parseFloat(targetKm) || 21.1
+  const now = Date.now()
+  const W8  = 56 * 86400000
+  const W4  = 28 * 86400000
+
+  const allRuns  = JSON.parse(raw).filter(a => (a.type === 'Run' || a.sport_type === 'Run') && a.distance > 500)
+  const r8w      = allRuns.filter(a => now - new Date(a.start_date_local).getTime() < W8)
+  const r4w      = allRuns.filter(a => now - new Date(a.start_date_local).getTime() < W4)
+
+  const longestKm = r8w.length ? Math.max(...r8w.map(a => a.distance)) / 1000 : 0
+  const weeklyKm  = r4w.reduce((s, a) => s + a.distance / 1000, 0) / 4
+  const sorted    = [...r8w].sort((a, b) => new Date(b.start_date_local) - new Date(a.start_date_local))
+  const daysSince = sorted.length ? Math.floor((now - new Date(sorted[0].start_date_local).getTime()) / 86400000) : 999
+
+  // Thresholds scaled to race distance
+  const longNeed = km * 0.78, longGood = km * 0.90
+  const wkNeed   = km * 1.7,  wkGood  = km * 2.4
+
+  const checks = [
+    {
+      label:  'Longest run (8 wks)',
+      value:  longestKm > 0 ? `${longestKm.toFixed(1)} km` : '—',
+      status: longestKm >= longGood ? 'good' : longestKm >= longNeed ? 'ok' : 'low',
+      tip:    longestKm >= longGood
+        ? `Strong long-run base — ${longestKm.toFixed(0)} km is well within reach of your ${km} km race.`
+        : longestKm >= longNeed
+        ? `Getting there. A ${Math.ceil(longGood)} km long run before race day would give you more confidence.`
+        : `Your longest recent run is ${longestKm.toFixed(1)} km. Build up to at least ${Math.ceil(longNeed)} km before racing ${km} km.`,
+    },
+    {
+      label:  'Weekly avg (4 wks)',
+      value:  weeklyKm > 0 ? `${weeklyKm.toFixed(0)} km/wk` : '—',
+      status: weeklyKm >= wkGood ? 'good' : weeklyKm >= wkNeed ? 'ok' : 'low',
+      tip:    weeklyKm >= wkGood
+        ? 'Strong weekly volume — your aerobic base is solid.'
+        : weeklyKm >= wkNeed
+        ? 'Decent volume. Consistent mileage over the next weeks matters most.'
+        : 'Low weekly mileage for this distance. Increase gradually (no more than +10%/week).',
+    },
+    {
+      label:  'Last run',
+      value:  daysSince < 999 ? (daysSince === 0 ? 'Today' : `${daysSince}d ago`) : '—',
+      status: daysSince <= 7 ? 'good' : daysSince <= 14 ? 'ok' : 'low',
+      tip:    daysSince <= 7  ? 'You\'re actively training — great habit.'
+            : daysSince <= 14 ? 'Slightly quiet recently. Keep the legs moving with easy runs.'
+            :                   'It\'s been a while. A few easy runs before race day will help shake off the rust.',
+    },
+    {
+      label:  'Runs (8 wks)',
+      value:  `${r8w.length}`,
+      status: r8w.length >= 16 ? 'good' : r8w.length >= 8 ? 'ok' : 'low',
+      tip:    r8w.length >= 16 ? 'Running consistently — frequency is the foundation of endurance fitness.'
+            : r8w.length >= 8  ? 'Moderate frequency. Aim for 3–4 runs per week leading up to race day.'
+            :                    'Low run count. Short easy runs 3–4× per week build more fitness than occasional long ones.',
+    },
+  ]
+
+  const goodCount  = checks.filter(c => c.status === 'good').length
+  const lowCount   = checks.filter(c => c.status === 'low').length
+  const longRunLow = checks[0].status === 'low'
+
+  let verdict, vIcon, vColor
+  if (!r8w.length)               { verdict = 'No training data found';   vIcon = '❓'; vColor = '#64748b' }
+  else if (longRunLow || lowCount >= 3) { verdict = 'Keep building your base';  vIcon = '🔨'; vColor = '#ef4444' }
+  else if (goodCount >= 3)       { verdict = 'Ready to race!';            vIcon = '✅'; vColor = '#22c55e' }
+  else if (goodCount >= 2)       { verdict = 'Almost race-ready';         vIcon = '⚡'; vColor = '#f59e0b' }
+  else                           { verdict = 'Getting there';             vIcon = '📈'; vColor = '#60a5fa' }
+
+  // Riegel time prediction from PR tab
+  const prs    = JSON.parse(localStorage.getItem(PRS_KEY) || '[]')
+  const ref10k = prs.find(p => p.distanceKm === 10)
+  const ref5k  = prs.find(p => p.distanceKm === 5)
+  let pred = null
+  if      (ref10k && km > 10) pred = { secs: Math.round(ref10k.totalSeconds * Math.pow(km / 10, 1.06)), src: '10K PR' }
+  else if (ref5k  && km > 5)  pred = { secs: Math.round(ref5k.totalSeconds  * Math.pow(km / 5,  1.06)), src: '5K PR'  }
+
+  const SC = { good: '#22c55e', ok: '#f59e0b', low: '#ef4444' }
+  const SI = { good: '✅', ok: '⚠️', low: '❌' }
+  const tip = (checks.find(c => c.status === 'low') || checks.find(c => c.status === 'ok') || checks[0]).tip
+
+  el.innerHTML = `
+    <p class="section-header">Am I Ready? · ${km} km</p>
+    <div class="card" style="margin-bottom:0;">
+      <div class="card-body">
+
+        <!-- Verdict banner -->
+        <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-raised);border-radius:10px;margin-bottom:14px;border-left:4px solid ${vColor};">
+          <div style="font-size:26px;line-height:1;">${vIcon}</div>
+          <div>
+            <div style="font-size:15px;font-weight:800;color:${vColor};">${verdict}</div>
+            <div style="font-size:12px;color:var(--text-muted);">Last 8 weeks · ${r8w.length} run${r8w.length !== 1 ? 's' : ''}</div>
+          </div>
+        </div>
+
+        <!-- 2×2 metrics -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+          ${checks.map(c => `
+            <div style="background:var(--bg-raised);border-radius:8px;padding:10px 12px;">
+              <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);margin-bottom:4px;">${c.label}</div>
+              <div style="font-size:17px;font-weight:800;color:${SC[c.status]};">${c.value}</div>
+              <div style="font-size:11px;margin-top:2px;">${SI[c.status]}</div>
+            </div>`).join('')}
+        </div>
+
+        <!-- Predicted finish time -->
+        ${pred ? `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;background:var(--bg-raised);border-radius:8px;margin-bottom:12px;">
+          <div style="font-size:18px;">🎯</div>
+          <div style="flex:1;">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px;">Predicted finish · Riegel formula from ${pred.src}</div>
+            <div style="font-size:18px;font-weight:800;color:var(--accent);">${_fmtSeconds(pred.secs)}</div>
+            <div style="font-size:11px;color:var(--text-muted);">Realistic range: ${_fmtSeconds(Math.round(pred.secs * 0.95))} – ${_fmtSeconds(Math.round(pred.secs * 1.05))}</div>
+          </div>
+        </div>` : ''}
+
+        <!-- Top tip -->
+        <div style="padding:10px 12px;background:var(--bg-raised);border-radius:8px;font-size:13px;line-height:1.5;color:var(--text-muted);">
+          💡 ${tip}
+        </div>
+      </div>
+    </div>`
+}
+
+// ── Race Morning Timeline ─────────────────────────────────────────────────────
+
+function _renderTimeline(startTime, travelMin, distanceKm) {
+  const [sh, sm]   = startTime.split(':').map(Number)
+  const startTotal = sh * 60 + sm   // minutes since midnight
+  const travel     = parseInt(travelMin) || 60
+  const wakeOff    = distanceKm >= 30 ? -240 : distanceKm >= 15 ? -210 : -150
+
+  const events = [
+    { off: wakeOff,        icon: '⏰', label: 'Wake up',               desc: 'Set multiple alarms — not the morning to oversleep.' },
+    { off: wakeOff + 30,   icon: '🍳', label: 'Breakfast',             desc: 'Familiar, carb-heavy meal: oatmeal, bagel, banana. Zero new foods on race day.' },
+    { off: -(travel + 45), icon: '🚗', label: 'Leave home',            desc: 'Build in buffer for traffic, parking, and transit surprises.' },
+    { off: -45,            icon: '🏟️', label: 'Arrive at venue',       desc: 'Pick up bib if needed. Find bag drop and locate your start corral.' },
+    { off: -35,            icon: '🚻', label: 'Bathroom stop',          desc: 'Do this before warming up — race lineups can be very long.' },
+    { off: -22,            icon: '🏃', label: 'Warm up',               desc: '8–10 min easy jog + a few short strides. Gets the legs firing before the gun.' },
+    { off: -12,            icon: '🍯', label: 'Pre-race gel',          desc: distanceKm >= 15 ? 'Caffeine gel if you use one. Chase with 200 mL water.' : 'Optional for shorter races — skip if you haven\'t practised with gels.' },
+    { off: -6,             icon: '📍', label: 'Into your start corral', desc: 'Find your pace group. Trust your training. Relax and breathe.' },
+    { off: 0,              icon: '🏁', label: 'Race start!',            desc: '', highlight: true },
+  ]
+
+  function fmtTime(off) {
+    const t = ((startTotal + off) % 1440 + 1440) % 1440
+    const h = Math.floor(t / 60) % 24
+    const m = t % 60
+    return `${h % 12 || 12}:${m.toString().padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`
+  }
+
+  return `
+    <p class="section-header">Race Morning Timeline</p>
+    <div class="card">
+      <div class="card-body" style="padding:6px 14px;">
+        ${events.map((ev, i) => `
+          <div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;${i < events.length - 1 ? 'border-bottom:1px solid var(--bg-raised);' : ''}">
+            <div style="min-width:70px;text-align:right;flex-shrink:0;padding-top:1px;">
+              <span style="font-size:${ev.highlight ? 14 : 12}px;font-weight:700;color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${fmtTime(ev.off)}</span>
+            </div>
+            <div style="font-size:${ev.highlight ? 18 : 15}px;flex-shrink:0;margin-top:-1px;">${ev.icon}</div>
+            <div style="flex:1;">
+              <div style="font-size:${ev.highlight ? 14 : 13}px;font-weight:${ev.highlight ? 800 : 600};color:${ev.highlight ? 'var(--accent)' : 'var(--text)'};">${ev.label}</div>
+              ${ev.desc ? `<div style="font-size:12px;color:var(--text-muted);margin-top:1px;line-height:1.4;">${ev.desc}</div>` : ''}
+            </div>
+          </div>`).join('')}
+      </div>
+    </div>`
 }
 
 // ── Parse MM:SS → decimal minutes ────────────────────────────────────────────
@@ -114,8 +324,7 @@ function _parsePace(str) {
   if (!str) return null
   const parts = str.split(':')
   if (parts.length !== 2) return null
-  const m = parseInt(parts[0], 10)
-  const s = parseInt(parts[1], 10)
+  const m = parseInt(parts[0], 10), s = parseInt(parts[1], 10)
   if (isNaN(m) || isNaN(s) || s >= 60 || m < 0) return null
   return m + s / 60
 }
@@ -128,13 +337,12 @@ function _formatPaceDisplay(paceMin) {
 
 // ── Results ───────────────────────────────────────────────────────────────────
 
-function _renderResults(root, { weight, paceMin, distance, date, temp, level }) {
+function _renderResults(root, { weight, paceMin, distance, date, startTime, temp, travelMin, level }) {
   const RACE_KM      = distance || 21.1
   const totalMinutes = paceMin * RACE_KM
   const totalHours   = totalMinutes / 60
-  const daysOut      = date ? Math.ceil((new Date(date) - new Date()) / 86400000) : null
+  const daysOut      = date ? Math.ceil((new Date(date + 'T00:00:00') - new Date()) / 86400000) : null
 
-  // ── Calorie & carb estimates ──────────────────────
   const weightKg   = weight * 0.453592
   const calPerMin  = (10.5 * weightKg * 3.5) / 200
   const totalCal   = Math.round(calPerMin * totalMinutes)
@@ -143,30 +351,19 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
   const totalCarbs = Math.round(carbsPerHr * totalHours)
   const gelsNeeded = Math.ceil(totalCarbs / 25)
 
-  // ── Hydration ─────────────────────────────────────
   const isHot  = temp != null && temp > 22
   const isCold = temp != null && temp < 7
-  const hydrationFactor = isHot ? 1.3 : isCold ? 0.85 : 1.0
-  const mlPerHr  = 350 * hydrationFactor
-  const totalMl  = Math.round(mlPerHr * totalHours)
+  const totalMl = Math.round(350 * (isHot ? 1.3 : isCold ? 0.85 : 1.0) * totalHours)
 
-  // ── Gel timing ────────────────────────────────────
   const gelInterval = level === 'beginner' ? 45 : 38
   const gelTimes = []
   let t = level === 'beginner' ? 40 : 35
-  while (t < totalMinutes - 10 && gelTimes.length < gelsNeeded) {
-    gelTimes.push(t); t += gelInterval
-  }
+  while (t < totalMinutes - 10 && gelTimes.length < gelsNeeded) { gelTimes.push(t); t += gelInterval }
 
-  function minToKm(min) { return (min / paceMin).toFixed(1) }
+  const minToKm = min => (min / paceMin).toFixed(1)
 
-  // ── Aid stations (every ~2.5 km, skip first 2 km) ─
   const aidStations = []
   for (let km = 2.5; km < RACE_KM - 1; km += 2.5) aidStations.push(km.toFixed(1))
-
-  const drinkAtStation = isHot
-    ? 'Drink at EVERY station (150–200 mL each)'
-    : 'Drink at every other station (150–200 mL each)'
 
   const preRaceMeals = [
     { label: '2–3 hours before', detail: '200–300 kcal of easily digestible carbs (banana, toast, oatmeal)' },
@@ -176,6 +373,8 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
 
   const el = root.querySelector('#fuel-results')
   el.innerHTML = `
+    ${startTime ? _renderTimeline(startTime, travelMin, RACE_KM) : ''}
+
     ${daysOut !== null ? `
     <div class="card" style="margin:0 12px 12px;">
       <div class="card-body" style="display:flex;align-items:center;gap:12px;">
@@ -195,7 +394,7 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
           ${_stat('🔥', totalCal.toLocaleString(), 'kcal burned')}
           ${_stat('🍯', totalCarbs + 'g', 'carbs needed')}
         </div>
-        ${isHot  ? `<div style="margin-top:12px;padding:8px 10px;background:#7f1d1d22;border:1px solid var(--danger);border-radius:8px;font-size:13px;color:var(--danger);">🌡️ Hot race day (${temp}°C) — hydration plan adjusted upward</div>` : ''}
+        ${isHot  ? `<div style="margin-top:12px;padding:8px 10px;background:#7f1d1d22;border:1px solid #ef4444;border-radius:8px;font-size:13px;color:#ef4444;">🌡️ Hot race day (${temp}°C) — hydration plan adjusted upward</div>` : ''}
         ${isCold ? `<div style="margin-top:12px;padding:8px 10px;background:#1e3a5f22;border:1px solid #60a5fa;border-radius:8px;font-size:13px;color:#60a5fa;">🥶 Cold day (${temp}°C) — don't skip fluids; you still sweat</div>` : ''}
       </div>
     </div>
@@ -212,7 +411,7 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
             </div>
           </div>`).join('') : `<p style="font-size:13px;color:var(--text-muted);">No gels needed for this distance at your pace.</p>`}
         <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border-radius:8px;font-size:13px;color:var(--text-muted);">
-          Practice your gel brand in training. Never try a new gel on race day.
+          Practise your gel brand in training. Never try a new gel on race day.
         </div>
       </div>
     </div>
@@ -220,10 +419,10 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
     <p class="section-header">Water Strategy (~${totalMl} mL total)</p>
     <div class="card">
       <div class="card-body">
-        <div style="font-size:14px;margin-bottom:10px;">${drinkAtStation}</div>
+        <div style="font-size:14px;margin-bottom:10px;">${isHot ? 'Drink at EVERY station (150–200 mL each)' : 'Drink at every other station (150–200 mL each)'}</div>
         <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px;">Typical aid stations near km: ${aidStations.join(', ')}</div>
         <div style="padding:8px 10px;background:var(--bg-raised);border-radius:8px;font-size:13px;color:var(--text-muted);">
-          Sip, don't gulp. Pinch the cup into a V-shape for easier drinking while moving.
+          Sip, don't gulp. Pinch the cup into a V-shape for easier drinking while running.
         </div>
       </div>
     </div>
@@ -246,16 +445,21 @@ function _renderResults(root, { weight, paceMin, distance, date, temp, level }) 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function _stat(icon, value, label) {
-  return `
-    <div>
-      <div style="font-size:22px;">${icon}</div>
-      <div style="font-size:20px;font-weight:800;">${value}</div>
-      <div style="font-size:11px;color:var(--text-muted);">${label}</div>
-    </div>`
+  return `<div>
+    <div style="font-size:22px;">${icon}</div>
+    <div style="font-size:20px;font-weight:800;">${value}</div>
+    <div style="font-size:11px;color:var(--text-muted);">${label}</div>
+  </div>`
 }
 
 function _formatTime(minutes) {
-  const h = Math.floor(minutes / 60)
-  const m = Math.round(minutes % 60)
+  const h = Math.floor(minutes / 60), m = Math.round(minutes % 60)
   return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+function _fmtSeconds(s) {
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = (s % 60).toString().padStart(2, '0')
+  return h > 0 ? `${h}:${m.toString().padStart(2, '0')}:${sec}` : `${m}:${sec}`
 }
