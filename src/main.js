@@ -1,15 +1,16 @@
 import './style.css'
-import { initHeatmap } from './features/heatmap.js'
-import { initShoes }   from './features/shoes.js'
-import { initFuel }    from './features/fuel.js'
-import { initZones }   from './features/zones.js'
-import { initPRs }     from './features/prs.js'
+import { initStatsTab } from './features/streak.js'
+import { initHeatmap }  from './features/heatmap.js'
+import { initShoes }    from './features/shoes.js'
+import { initFuel }     from './features/fuel.js'
+import { initZones }    from './features/zones.js'
+import { initPRs }      from './features/prs.js'
 
 // ── Tab routing ──────────────────────────────────────
 const tabs   = document.querySelectorAll('.tab-btn')
 const panels = document.querySelectorAll('.tab-panel')
 
-let initialized = { heatmap: false, shoes: false, fuel: false, zones: false, prs: false }
+let initialized = { stats: false, heatmap: false, shoes: false, fuel: false, zones: false, prs: false }
 
 function activateTab(name) {
   tabs.forEach(t => {
@@ -23,6 +24,7 @@ function activateTab(name) {
 
   if (!initialized[name]) {
     initialized[name] = true
+    if (name === 'stats')   initStatsTab(document.getElementById('stats-root'))
     if (name === 'heatmap') initHeatmap(document.getElementById('heatmap-root'))
     if (name === 'shoes')   initShoes(document.getElementById('shoes-root'))
     if (name === 'fuel')    initFuel(document.getElementById('fuel-root'))
@@ -35,8 +37,8 @@ tabs.forEach(btn => {
   btn.addEventListener('click', () => activateTab(btn.dataset.tab))
 })
 
-// Bootstrap the default tab
-activateTab('heatmap')
+// Bootstrap the default tab (Stats is first)
+activateTab('stats')
 
 // ── PWA install prompt ───────────────────────────────
 let deferredInstall = null
