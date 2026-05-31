@@ -2,6 +2,7 @@
 import { getZones, zoneIndexForHR } from '../lib/zones.js'
 import { fetchStream }               from '../lib/streamCache.js'
 import { renderHRChart, renderPaceChart } from '../lib/charts.js'
+import { renderStreakHTML }          from './streak.js'
 
 const CREDS_KEY      = 'hm_strava_creds'
 const TOKENS_KEY     = 'hm_strava_tokens'
@@ -344,7 +345,8 @@ function _renderRunList(root, activities) {
             </div>
           </div>`
       }).join('')
-    })()}`
+    })()}
+  ${renderStreakHTML()}`
 
   // Double-tap detection
   let lastTapId = null
